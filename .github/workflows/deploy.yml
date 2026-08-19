@@ -1,0 +1,71 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+      - 'Dockerfile'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.decide.outputs.should_deploy }}
+    steps:
+      - id: decide
+        run: |
+          if [ -n "$CF_ACCOUNT_ID" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    name: Deploy
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 生成部署用 wrangler.toml：
+      # - 上游默认 name=wxpush，这里改为线上现有 worker my-wxpush-service（保留 work.ccxl.ccwu.cc 域名与历史）
+      # - keep_vars=true 保留线上已有的 6 个环境变量（API_TOKEN/WX_APPID/WX_SECRET/WX_USERID/WX_TEMPLATE_ID/WX_BASE_URL），
+      #   否则 wrangler deploy 会清掉它们导致推送服务失效
+      - name: 📝 Create wrangler.toml
+        run: |
+          cat > wrangler.toml << 'WEOF'
+          name = "my-wxpush-service"
+          main = "src/index.js"
+          compatibility_date = "2023-11-21"
+          keep_vars = true
+          WEOF
+          cat wrangler.toml
+
+      - name: 🚀 Deploy to Cloudflare Workers
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: ✅ Deployment Success
+        if: success()
+        run: echo "🎉 部署成功！"
+
+      - name: ❌ Deployment Failed
+        if: failure()
+        run: echo "💥 部署失败！请检查 Actions 日志"
