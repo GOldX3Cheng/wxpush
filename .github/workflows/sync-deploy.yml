@@ -1,0 +1,58 @@
+name: Sync & Deploy
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 每天 UTC 00:00（北京时间 08:00）
+  workflow_dispatch:
+
+jobs:
+  sync-and-deploy:
+    name: Sync upstream then deploy if changed
+    runs-on: ubuntu-latest
+    if: ${{ github.event.repository.fork }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: frankiejun/wxpush
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          test_mode: false
+
+      # 门禁：上游有新版 或 手动触发 才部署
+      - name: Setup Node.js
+        if: steps.sync.outputs.has_new_commits == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 生成部署用 wrangler.toml：
+      # - 改为线上现有 worker my-wxpush-service（保留 work.ccxl.ccwu.cc 域名与历史）
+      # - keep_vars=true 保留线上已有的 6 个环境变量，否则 wrangler deploy 会清掉
+      - name: Create wrangler.toml
+        if: steps.sync.outputs.has_new_commits == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          cat > wrangler.toml << 'WEOF'
+          name = "my-wxpush-service"
+          main = "src/index.js"
+          compatibility_date = "2023-11-21"
+          keep_vars = true
+          WEOF
+          cat wrangler.toml
+
+      - name: Deploy to Cloudflare Workers
+        if: steps.sync.outputs.has_new_commits == 'true' || github.event_name == 'workflow_dispatch'
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
