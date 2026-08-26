@@ -1,0 +1,44 @@
+name: Purge Old Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Delete workflow runs older than this many days'
+        required: false
+        default: '2'
+  schedule:
+    - cron: '30 1 * * *'   # daily 01:30 UTC (Beijing 09:30), after sync-deploy
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete runs older than threshold
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ github.event.inputs.days || '2' }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Repo: ${{ github.repository }}"
+          echo "Deleting runs created before ${cutoff} (older than ${DAYS} days)"
+          page=1
+          deleted=0
+          while :; do
+            ids=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100&page=${page}" \
+                    --jq ".workflow_runs[] | select(.created_at < \"${cutoff}\") | .id")
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              echo "  deleting run ${id}"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${id}" \
+                && deleted=$((deleted+1)) \
+                || echo "    (skip ${id})"
+            done
+            page=$((page+1))
+          done
+          echo "Done. Deleted ${deleted} run(s) older than ${DAYS} days."
